@@ -1,15 +1,13 @@
 
 export const runtime = 'nodejs';
-import { db } from "@/db";
-import { sql } from "drizzle-orm";
+import { NextResponse } from 'next/server';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  try {
-    await db.execute(sql`select 1`);
-    return Response.json({ ok: true });
-  } catch {
-    return Response.json({ ok: false }, { status: 500 });
-  }
+  return NextResponse.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    service: 'CholeyTube API',
+  });
 }
