@@ -1,3 +1,4 @@
+export const runtime = 'edge';
 import { NextResponse } from "next/server";
 import ytDlp, { type YtResponse } from "yt-dlp-exec";
 

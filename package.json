@@ -1,5 +1,5 @@
 {
-  "name": "nextjs-postgresql-template",
+  "name": "CholeyTube",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@cloudflare/workers-types": "^5.20260801.1",
     "@types/fluent-ffmpeg": "^2.1.28",
     "clsx": "^2.1.1",
     "dotenv": "17.3.1",
