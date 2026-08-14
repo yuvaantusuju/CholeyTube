@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    background-image:
+      radial-gradient(at 15% 10%, rgba(139, 92, 246, 0.18) 0px, transparent 50%),
+      radial-gradient(at 85% 20%, rgba(239, 68, 68, 0.12) 0px, transparent 50%),
+      radial-gradient(at 50% 90%, rgba(168, 85, 247, 0.12) 0px, transparent 50%);
+    background-attachment: fixed;
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .glass-strong {
+    background: rgba(20, 8, 40, 0.7);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .gradient-text {
+    background: linear-gradient(90deg, #c084fc 0%, #f87171 50%, #c084fc 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: shine 4s linear infinite;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #9333ea 0%, #dc2626 100%);
+    transition: all 0.25s ease;
+    box-shadow: 0 8px 24px -8px rgba(147, 51, 234, 0.6);
+  }
+  .btn-primary:hover {
+    box-shadow: 0 12px 32px -8px rgba(220, 38, 38, 0.7);
+    transform: translateY(-1px);
+  }
+  .btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+  }
+  .pulse-ring {
+    animation: pulse-ring 1.8s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+  }
+}
+
+@keyframes shine {
+  to {
+    background-position: 200% center;
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(192, 132, 252, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 14px rgba(192, 132, 252, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(192, 132, 252, 0);
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0118;
+}
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #7e22ce, #9f1239);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #9333ea, #b91c1c);
+}
