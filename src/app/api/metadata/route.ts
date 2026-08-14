@@ -1,4 +1,4 @@
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 import { NextResponse } from "next/server";
 import ytDlp, { type YtResponse } from "yt-dlp-exec";
 

@@ -1,5 +1,5 @@
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
 
