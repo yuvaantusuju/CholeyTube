@@ -92,7 +92,7 @@ export async function POST(req: Request) {
         videoDetails.author?.name || videoDetails.ownerChannelName || "Unknown Channel",
       thumbnail: thumb,
       duration: parseInt(videoDetails.lengthSeconds || "0", 10),
-      description: videoDetails.Description || "",
+      description: videoDetails.description || "",
       viewCount: parseInt(videoDetails.viewCount || "0", 10),
       url: videoDetails.video_url || url,
       formats: formats.map((f) => ({
