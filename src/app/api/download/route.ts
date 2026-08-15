@@ -1,5 +1,5 @@
 // Node.js runtime (default) — same reason as metadata/route.ts.
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // IMPORTANT: switching to the Node.js runtime does NOT give you a real
