@@ -1,7 +1,7 @@
 // Node.js runtime (default) — required because @distube/ytdl-core pulls in
 // node:stream, node:http(s), and node:events, none of which the restricted
 // Next.js "edge" runtime allows. Do NOT set `runtime = "edge"` here.
-export const runtime = "nodejs";
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
