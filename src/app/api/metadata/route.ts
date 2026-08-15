@@ -1,31 +1,11 @@
-export const runtime = 'edge';
-import { NextResponse } from "next/server";
-import ytdl from "@distube/ytdl-core";
-
+// Node.js runtime (default) — required because @distube/ytdl-core pulls in
+// node:stream, node:http(s), and node:events, none of which the restricted
+// Next.js "edge" runtime allows. Do NOT set `runtime = "edge"` here.
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-interface PlaylistEntry {
-  id?: string;
-  title?: string;
-  thumbnail?: string;
-  thumbnails?: { url: string }[];
-  duration?: number;
-  uploader?: string;
-  channel?: string;
-  creator?: string;
-}
-
-interface PlaylistResponse {
-  _type?: string;
-  title?: string;
-  uploader?: string;
-  channel?: string;
-  creator?: string;
-  webpage_url?: string;
-  thumbnail?: string;
-  thumbnails?: { url: string }[];
-  entries?: PlaylistEntry[];
-}
+import { NextResponse } from "next/server";
+import ytdl from "@distube/ytdl-core";
 
 interface MetadataPayload {
   url: string;
@@ -51,16 +31,9 @@ export async function POST(req: Request) {
 
     const ytPattern =
       /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)\/.+/i;
-    if (!ytPattern.test(url)) {
+    if (!ytPattern.test(url) || !ytdl.validateURL(url)) {
       return NextResponse.json(
         { error: "That doesn't look like a valid YouTube link." },
-        { status: 400 }
-      );
-    }
-
-    if (!ytdl.validateURL(url)) {
-      return NextResponse.json(
-        { error: "Invalid YouTube URL." },
         { status: 400 }
       );
     }
