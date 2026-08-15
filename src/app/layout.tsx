@@ -3,18 +3,30 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CholeyTube - YouTube to MP3 & MP4 Downloader",
+  title: "CholeyTube — YouTube to MP3 & MP4 Downloader",
   description:
-    "Download YouTube videos and convert YouTube audio directly to MP3 format with CholeyTube. Fast, free, and high quality.",
-  icons: {
-    icon: "/favicon.ico",
+    "Download YouTube videos in up to 4K MP4 or convert any video, Short, or playlist to high-quality MP3 (128 / 192 / 320 kbps) — fast, free, and private.",
+  applicationName: "CholeyTube",
+  keywords: [
+    "youtube downloader",
+    "youtube to mp3",
+    "youtube to mp4",
+    "yt-dlp",
+    "youtube converter",
+    "4k video download",
+  ],
+  openGraph: {
+    title: "CholeyTube — YouTube to MP3 & MP4 Downloader",
+    description:
+      "Convert YouTube videos to MP3 or download MP4 up to 4K in seconds.",
+    type: "website",
   },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className="dark">
-      <body className="min-h-screen bg-[#0a0118] text-white antialiased selection:bg-purple-500/30 selection:text-white">
+      <body className="min-h-screen bg-[#07070d] text-zinc-100 antialiased">
         {children}
       </body>
     </html>

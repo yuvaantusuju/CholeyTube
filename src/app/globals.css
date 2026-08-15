@@ -1,88 +1,77 @@
 @import "tailwindcss";
 
-@layer base {
-  html {
-    scroll-behavior: smooth;
-  }
-  body {
-    background-image:
-      radial-gradient(at 15% 10%, rgba(139, 92, 246, 0.18) 0px, transparent 50%),
-      radial-gradient(at 85% 20%, rgba(239, 68, 68, 0.12) 0px, transparent 50%),
-      radial-gradient(at 50% 90%, rgba(168, 85, 247, 0.12) 0px, transparent 50%);
-    background-attachment: fixed;
-  }
+:root {
+  color-scheme: dark;
 }
 
-@layer utilities {
-  .glass {
-    background: rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-  }
-  .glass-strong {
-    background: rgba(20, 8, 40, 0.7);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-  }
-  .gradient-text {
-    background: linear-gradient(90deg, #c084fc 0%, #f87171 50%, #c084fc 100%);
-    background-size: 200% auto;
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    animation: shine 4s linear infinite;
-  }
-  .btn-primary {
-    background: linear-gradient(135deg, #9333ea 0%, #dc2626 100%);
-    transition: all 0.25s ease;
-    box-shadow: 0 8px 24px -8px rgba(147, 51, 234, 0.6);
-  }
-  .btn-primary:hover {
-    box-shadow: 0 12px 32px -8px rgba(220, 38, 38, 0.7);
-    transform: translateY(-1px);
-  }
-  .btn-primary:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-    transform: none;
-  }
-  .pulse-ring {
-    animation: pulse-ring 1.8s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
-  }
+html {
+  scroll-behavior: smooth;
 }
 
-@keyframes shine {
-  to {
-    background-position: 200% center;
-  }
+body {
+  background-color: #07070d;
+  color: #f4f4f5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-@keyframes pulse-ring {
-  0% {
-    box-shadow: 0 0 0 0 rgba(192, 132, 252, 0.5);
-  }
-  70% {
-    box-shadow: 0 0 0 14px rgba(192, 132, 252, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(192, 132, 252, 0);
-  }
+::selection {
+  background: rgba(168, 85, 247, 0.35);
+  color: #ffffff;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar {
+/* Thin, branded scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 92, 246, 0.45) transparent;
+}
+*::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
-::-webkit-scrollbar-track {
-  background: #0a0118;
+*::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.4);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, #7e22ce, #9f1239);
-  border-radius: 10px;
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, #9333ea, #b91c1c);
+
+/* Gradient headline text */
+.text-gradient {
+  background: linear-gradient(100deg, #d8b4fe 0%, #a855f7 40%, #f43f5e 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Subtle grid backdrop for the hero */
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 62% at 50% 0%, #000 35%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 62% at 50% 0%, #000 35%, transparent 100%);
+}
+
+/* Soft glow keyframe for ambient blobs */
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(28px, -22px, 0) scale(1.08);
+  }
+}
+
+.animate-drift {
+  animation: drift 14s ease-in-out infinite;
+}
+
+.animate-drift-slow {
+  animation: drift 20s ease-in-out infinite reverse;
 }
