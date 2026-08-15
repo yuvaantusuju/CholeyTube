@@ -1,4 +1,4 @@
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 import { NextRequest, NextResponse } from "next/server";
 // execa v5 is CJS; use default import
 import execa from "execa";
