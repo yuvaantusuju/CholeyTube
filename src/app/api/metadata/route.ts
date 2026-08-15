@@ -1,6 +1,6 @@
 export const runtime = 'edge';
 import { NextResponse } from "next/server";
-import ytDlp, { type YtResponse } from "yt-dlp-exec";
+import ytdl from "@distube/ytdl-core";
 
 export const dynamic = "force-dynamic";
 
@@ -58,67 +58,52 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = (await ytDlp(url, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      noCheckCertificate: true,
-      preferFreeFormats: true,
-      skipDownload: true,
-      flatPlaylist: false,
-    })) as YtResponse & PlaylistResponse;
-
-    if (!result) {
+    if (!ytdl.validateURL(url)) {
       return NextResponse.json(
-        { error: "Could not retrieve video metadata." },
-        { status: 422 }
+        { error: "Invalid YouTube URL." },
+        { status: 400 }
       );
     }
 
-    // Playlist?
-    if (result._type && result._type === "playlist") {
-      const entries = (result.entries || []).filter(Boolean);
-      if (entries.length === 0) {
-        return NextResponse.json(
-          { error: "Playlist is empty or private." },
-          { status: 422 }
-        );
-      }
-      const firstEntry = entries[0];
-      const plThumb =
-        firstEntry.thumbnail ||
-        firstEntry.thumbnails?.slice(-1)[0]?.url ||
-        result.thumbnail ||
-        "";
-      return NextResponse.json({
-        ok: true,
-        isPlaylist: true,
-        id: "",
-        title: result.title || "YouTube Playlist",
-        channel: result.uploader || result.channel || result.creator || "Unknown",
-        thumbnail: plThumb,
-        entriesCount: entries.length,
-        duration: entries.reduce((acc, e) => acc + (e.duration || 0), 0),
-        url: result.webpage_url || url,
-      });
-    }
+    const info = await ytdl.getInfo(url, {
+      requestOptions: {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        },
+      },
+    });
+
+    const videoDetails = info.videoDetails;
+    const formats = info.formats;
 
     const thumb =
-      result.thumbnail ||
-      result.thumbnails?.slice(-1)[0]?.url ||
-      (result.id ? `https://i.ytimg.com/vi/${result.id}/hqdefault.jpg` : "");
+      videoDetails.thumbnails?.slice(-1)[0]?.url ||
+      (videoDetails.videoId
+        ? `https://i.ytimg.com/vi/${videoDetails.videoId}/hqdefault.jpg`
+        : "");
 
     return NextResponse.json({
       ok: true,
       isPlaylist: false,
-      id: result.id || "",
-      title: result.title || result.fulltitle || "Untitled Video",
+      id: videoDetails.videoId || "",
+      title: videoDetails.title || "Untitled Video",
       channel:
-        result.uploader || result.channel || result.creator || "Unknown Channel",
+        videoDetails.author?.name || videoDetails.ownerChannelName || "Unknown Channel",
       thumbnail: thumb,
-      duration: result.duration || 0,
-      description: result.description || "",
-      viewCount: result.view_count || 0,
-      url: result.webpage_url || url,
+      duration: parseInt(videoDetails.lengthSeconds || "0", 10),
+      description: videoDetails.shortDescription || "",
+      viewCount: parseInt(videoDetails.viewCount || "0", 10),
+      url: videoDetails.video_url || url,
+      formats: formats.map((f) => ({
+        itag: f.itag,
+        mimeType: f.mimeType,
+        quality: f.qualityLabel || f.quality,
+        hasVideo: f.hasVideo,
+        hasAudio: f.hasAudio,
+        contentLength: f.contentLength,
+        bitrate: f.bitrate,
+      })),
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
