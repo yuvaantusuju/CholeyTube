@@ -1,294 +1,182 @@
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { Readable } from "node:stream";
-import { NextRequest } from "next/server";
-import ffmpeg from "fluent-ffmpeg";
-import {
-  FFMPEG_PATH,
-  FFPROBE_PATH,
-  fetchVideoInfo,
-  findFile,
-  friendlyError,
-  invokeYtDlp,
-  invokeYtDlpWithFallback,
-  isYouTubeUrl,
-  mp4FormatSelector,
-  sanitizeFilename,
-} from "@/lib/youtube";
-import type { VideoInfo } from "@/lib/types";
+import { NextResponse, type NextRequest } from "next/server";
 
-export const dynamic = "force-dynamic";
+import { cacheGet, cacheSet, rateLimit } from "@/lib/cache";
+import { MetadataError, fetchVideoMetadata } from "@/lib/metadata";
+import { REFERENCE_HOST, resolveDownloads } from "@/lib/resolver";
+import { SAMPLE_ASSETS, SAMPLE_CREDIT } from "@/lib/samples";
+import { buildMuxUrl, buildProxyUrl } from "@/lib/sign";
+import { ffmpegAvailable } from "@/lib/ytdlp";
+import type { ApiErrorCode, ApiResponse, SampleDownload, VideoResult } from "@/lib/types";
+import { formatDuration, parseYouTubeUrl } from "@/lib/youtube";
+
+/**
+ * Openly-licensed files the proxy is always allowed to serve. These let a user
+ * confirm the download path works even before a resolver is attached.
+ */
+async function buildSampleDownloads(): Promise<SampleDownload[]> {
+  // The merged sample spawns ffmpeg; hide it when the binary isn't present so
+  // we never render a Download button that cannot work.
+  const canMux = await ffmpegAvailable();
+  const assets = SAMPLE_ASSETS.filter((asset) => !asset.audioUrl || canMux);
+
+  return assets.map((asset) => ({
+    id: asset.id,
+    kind: asset.kind,
+    label: asset.label,
+    description: asset.description,
+    container: asset.container,
+    proxyUrl: asset.audioUrl
+      ? buildMuxUrl(asset.url, asset.audioUrl, `big-buck-bunny-${asset.label}.${asset.container}`)
+      : buildProxyUrl(asset.url, `big-buck-bunny-${asset.label}.${asset.container}`),
+    credit: SAMPLE_CREDIT,
+  }));
+}
+
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const dynamic = "force-dynamic";
 
-// Point fluent-ffmpeg at the bundled static binaries so no system FFmpeg is
-// required to run the conversion pipeline.
-if (FFMPEG_PATH) {
-  try {
-    ffmpeg.setFfmpegPath(FFMPEG_PATH);
-  } catch {
-    /* ignore */
-  }
-}
-try {
-  ffmpeg.setFfprobePath(FFPROBE_PATH);
-} catch {
-  /* ignore */
-}
+const CACHE_TTL_MS = 5 * 60_000;
+const RATE_LIMIT = 20;
+const RATE_WINDOW_MS = 60_000;
 
-const MP3_BITRATES = new Set(["128", "192", "320"]);
-const MP4_RESOLUTIONS = new Set(["360", "480", "720", "1080", "2160"]);
-
-const BASE_DOWNLOAD_FLAGS = {
-  noPlaylist: true,
-  noWarnings: true,
-  noCheckCertificates: true,
-  quiet: true,
-  noProgress: true,
-  ...(FFMPEG_PATH ? { ffmpegLocation: FFMPEG_PATH } : {}),
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": process.env.ALLOWED_ORIGIN ?? "*",
+  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Max-Age": "86400",
 };
 
-export async function GET(req: NextRequest) {
-  const params = req.nextUrl.searchParams;
-  const url = (params.get("url") ?? "").trim();
-  const type = params.get("type") === "mp4" ? "mp4" : "mp3";
-  const rawQuality = (params.get("quality") ?? "").trim();
-  const embedThumbnail = params.get("embedThumbnail") === "1";
-
-  if (!url || !isYouTubeUrl(url)) {
-    return Response.json(
-      { error: "Please provide a valid YouTube URL." },
-      { status: 400 },
-    );
-  }
-
-  if (type === "mp3" && !FFMPEG_PATH) {
-    return Response.json(
-      { error: "FFmpeg is not available on this server, so audio conversion can't run." },
-      { status: 500 },
-    );
-  }
-
-  const quality =
-    type === "mp3"
-      ? MP3_BITRATES.has(rawQuality)
-        ? rawQuality
-        : "192"
-      : MP4_RESOLUTIONS.has(rawQuality)
-        ? rawQuality
-        : "720";
-
-  let workDir: string | null = null;
-
-  try {
-    // Resolve metadata first so we can use a clean, title-based filename and
-    // transparently handle playlist URLs (we download the first entry).
-    const info = await fetchVideoInfo(url);
-    const downloadUrl = info.webpageUrl || url;
-    const extension = type === "mp3" ? "mp3" : "mp4";
-    const fileName = `${sanitizeFilename(info.title)}.${extension}`;
-
-    workDir = await fsp.mkdtemp(path.join(os.tmpdir(), "cholytube-"));
-
-    const outputPath =
-      type === "mp3"
-        ? await processMp3({ downloadUrl, info, quality, embedThumbnail, workDir })
-        : await processMp4({ downloadUrl, info, quality, workDir });
-
-    return streamFile(outputPath, fileName, type);
-  } catch (err) {
-    if (workDir) {
-      await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
-    }
-    return Response.json({ error: friendlyError(err) }, { status: 422 });
-  }
+function json(body: ApiResponse, status: number, extra: Record<string, string> = {}) {
+  return NextResponse.json(body, {
+    status,
+    headers: { ...CORS_HEADERS, "Cache-Control": "no-store", ...extra },
+  });
 }
 
-/**
- * MP3 pipeline:
- *  1. yt-dlp runs `-x --audio-format mp3 --audio-quality <bitrate>K` (FFmpeg
- *     under the hood) to produce a valid, exact-bitrate MP3 container.
- *  2. When cover art is requested, the thumbnail is fetched and fluent-ffmpeg
- *     losslessly embeds it (stream copy) plus ID3 tags into the final file.
- */
-async function processMp3(opts: {
-  downloadUrl: string;
-  info: VideoInfo;
-  quality: string;
-  embedThumbnail: boolean;
-  workDir: string;
-}): Promise<string> {
-  const { downloadUrl, info, quality, embedThumbnail, workDir } = opts;
+function fail(code: ApiErrorCode, message: string, status: number, hint?: string) {
+  return json({ ok: false, error: { code, message, hint } }, status);
+}
 
-  await invokeYtDlpWithFallback(
-    downloadUrl,
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+}
+
+/** Small capability probe — handy for uptime checks and for the footer badge. */
+export async function GET() {
+  return NextResponse.json(
     {
-      ...BASE_DOWNLOAD_FLAGS,
-      extractAudio: true,
-      audioFormat: "mp3",
-      audioQuality: `${quality}K`,
-      addMetadata: true,
-      output: path.join(workDir, "audio.%(ext)s"),
+      ok: true,
+      service: "CholeyTube resolve API",
+      referenceHost: REFERENCE_HOST,
+      mode: process.env.RESOLVER_ENDPOINT ? "live" : "preview",
+      accepts: { method: "POST", body: { url: "https://youtu.be/<id>" } },
     },
-    { cwd: workDir, timeout: 10 * 60 * 1000 },
+    { headers: { ...CORS_HEADERS, "Cache-Control": "no-store" } },
   );
+}
 
-  const audioPath = await findFile(workDir, [".mp3"], "audio");
-  if (!audioPath) {
-    throw new Error("Failed to extract and encode the audio stream.");
-  }
+export async function POST(request: NextRequest) {
+  const startedAt = Date.now();
 
-  if (!embedThumbnail) return audioPath;
-
-  let coverPath: string | null = null;
-  try {
-    await invokeYtDlp(
-      downloadUrl,
+  // ---- 1. Rate limiting -------------------------------------------------
+  const ip =
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip") ||
+    "anonymous";
+  const limit = rateLimit(`resolve:${ip}`, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!limit.allowed) {
+    return json(
       {
-        ...BASE_DOWNLOAD_FLAGS,
-        skipDownload: true,
-        writeThumbnail: true,
-        convertThumbnails: "jpg",
-        output: path.join(workDir, "cover.%(ext)s"),
+        ok: false,
+        error: {
+          code: "RATE_LIMITED",
+          message: "Too many requests. Give it a few seconds and try again.",
+          hint: `Retry in ${limit.retryAfterSeconds}s.`,
+        },
       },
-      { cwd: workDir, timeout: 60_000 },
+      429,
+      { "Retry-After": String(limit.retryAfterSeconds) },
     );
-    coverPath = await findFile(workDir, [".jpg", ".jpeg", ".png"], "cover");
-  } catch {
-    coverPath = null;
   }
 
-  const finalPath = path.join(workDir, "final.mp3");
-  await finalizeMp3(audioPath, coverPath, info, finalPath);
-  return finalPath;
-}
+  // ---- 2. Body parsing --------------------------------------------------
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return fail("BAD_REQUEST", "Request body must be valid JSON.", 400);
+  }
 
-function finalizeMp3(
-  inputPath: string,
-  coverPath: string | null,
-  info: VideoInfo,
-  outputPath: string,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const command = ffmpeg(inputPath);
-    const outputOptions: string[] = ["-id3v2_version", "3"];
+  const rawUrl =
+    typeof payload === "object" && payload !== null && "url" in payload
+      ? String((payload as { url: unknown }).url ?? "")
+      : "";
 
-    if (coverPath) {
-      command.input(coverPath);
-      outputOptions.push(
-        "-map",
-        "0:a:0",
-        "-map",
-        "1:0",
-        "-c:a",
-        "copy",
-        "-c:v",
-        "mjpeg",
-        "-metadata:s:v",
-        "title=Album cover",
-        "-metadata:s:v",
-        "comment=Cover (front)",
+  // ---- 3. URL validation ------------------------------------------------
+  const parsed = parseYouTubeUrl(rawUrl);
+  if (!parsed.ok) {
+    return fail(parsed.code, parsed.message, parsed.code === "EMPTY_INPUT" ? 400 : 422, {
+      EMPTY_INPUT: "Try https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      INVALID_URL: "Copy the link straight from the YouTube share sheet.",
+      NOT_YOUTUBE: "Playlists, channels and other sites are not supported.",
+    }[parsed.code]);
+  }
+
+  const { videoId, watchUrl } = parsed;
+
+  // ---- 4. Cache ---------------------------------------------------------
+  const cached = cacheGet<VideoResult>(`video:${videoId}`);
+  if (cached) {
+    return json(
+      { ok: true, data: { ...cached, cached: true, elapsedMs: Date.now() - startedAt } },
+      200,
+    );
+  }
+
+  // ---- 5. Metadata + link resolution ------------------------------------
+  try {
+    const metadata = await fetchVideoMetadata(videoId);
+    const resolved = await resolveDownloads(
+      videoId,
+      watchUrl,
+      metadata.durationSeconds,
+      metadata.title,
+    );
+
+    const result: VideoResult = {
+      videoId,
+      title: metadata.title,
+      channel: metadata.channel,
+      channelUrl: metadata.channelUrl,
+      thumbnail: metadata.thumbnail,
+      durationSeconds: metadata.durationSeconds,
+      durationLabel: formatDuration(metadata.durationSeconds),
+      watchUrl,
+      metadataSource: metadata.source,
+      degraded: metadata.degraded,
+      mode: resolved.mode,
+      resolverHost: resolved.resolverHost,
+      notice: [metadata.degradedReason, resolved.notice].filter(Boolean).join(" ") || null,
+      formats: resolved.formats,
+      samples: resolved.formats.some((f) => !f.available) ? await buildSampleDownloads() : [],
+      cached: false,
+      fetchedAt: new Date().toISOString(),
+      elapsedMs: Date.now() - startedAt,
+    };
+
+    cacheSet(`video:${videoId}`, result, CACHE_TTL_MS);
+    return json({ ok: true, data: result }, 200);
+  } catch (error) {
+    if (error instanceof MetadataError) {
+      return fail(
+        error.code,
+        error.message,
+        error.code === "VIDEO_UNAVAILABLE" ? 404 : 502,
+        "Double-check the link opens in a normal browser tab.",
       );
-    } else {
-      outputOptions.push("-c:a", "copy");
     }
 
-    outputOptions.push(
-      "-metadata",
-      `title=${info.title}`,
-      "-metadata",
-      `artist=${info.channel}`,
-      "-metadata",
-      "album=CholeyTube",
-    );
-
-    command
-      // Spread (rather than pass an array) so fluent-ffmpeg does NOT split
-      // options containing spaces (e.g. "title=Album cover").
-      .outputOptions(...outputOptions)
-      .on("error", (err, _stdout, stderr) =>
-        reject(new Error(stderr || err?.message || "FFmpeg failed to finalize the MP3.")),
-      )
-      .on("end", () => resolve())
-      .save(outputPath);
-  });
-}
-
-/**
- * MP4 pipeline: yt-dlp selects the best video+audio streams at or below the
- * requested resolution and merges them into a single MP4 container.
- */
-async function processMp4(opts: {
-  downloadUrl: string;
-  info: VideoInfo;
-  quality: string;
-  workDir: string;
-}): Promise<string> {
-  const { downloadUrl, info, quality, workDir } = opts;
-
-  await invokeYtDlpWithFallback(
-    downloadUrl,
-    {
-      ...BASE_DOWNLOAD_FLAGS,
-      format: mp4FormatSelector(quality),
-      mergeOutputFormat: "mp4",
-      output: path.join(workDir, `${sanitizeFilename(info.title)}.%(ext)s`),
-    },
-    { cwd: workDir, timeout: 15 * 60 * 1000 },
-  );
-
-  const expected = path.join(workDir, `${sanitizeFilename(info.title)}.mp4`);
-  if (await fileExists(expected)) return expected;
-
-  const found = await findFile(workDir, [".mp4"]);
-  if (found) return found;
-
-  throw new Error("Failed to download and merge the video stream.");
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fsp.access(filePath, fs.constants.F_OK);
-    return true;
-  } catch {
-    return false;
+    console.error("[/api/download] unexpected failure", error);
+    return fail("INTERNAL_ERROR", "Something broke while analysing that link.", 500);
   }
-}
-
-function streamFile(
-  filePath: string,
-  fileName: string,
-  type: "mp3" | "mp4",
-): Response {
-  const stat = fs.statSync(filePath);
-  const nodeStream = fs.createReadStream(filePath);
-
-  const headers = new Headers();
-  headers.set("Content-Disposition", contentDisposition(fileName));
-  headers.set("Content-Type", type === "mp3" ? "audio/mpeg" : "video/mp4");
-  headers.set("Content-Length", String(stat.size));
-  headers.set("Cache-Control", "no-store");
-  headers.set("X-Content-Type-Options", "nosniff");
-
-  const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream<Uint8Array>;
-
-  // Best-effort cleanup of the temporary working directory after streaming.
-  const dir = path.dirname(filePath);
-  nodeStream.on("close", () => {
-    fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
-  });
-  nodeStream.on("error", () => {
-    fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
-  });
-
-  return new Response(webStream, { headers });
-}
-
-function contentDisposition(fileName: string): string {
-  const fallback =
-    fileName.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_") || "download";
-  const encoded = encodeURIComponent(fileName);
-  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }

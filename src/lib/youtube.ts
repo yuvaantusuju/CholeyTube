@@ -1,272 +1,133 @@
-import path from "node:path";
-import fsp from "node:fs/promises";
-import youtubedl from "yt-dlp-exec";
-import ffmpegStaticPath from "ffmpeg-static";
-import ffprobeStatic from "ffprobe-static";
-import type { VideoInfo } from "./types";
-
-export const FFMPEG_PATH: string | null = ffmpegStaticPath;
-export const FFPROBE_PATH: string = ffprobeStatic.path;
-
-const MP4_FORMAT_SELECTORS: Record<string, string> = {
-  "360": "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
-  "480": "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
-  "720": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-  "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-  "2160": "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best",
-};
-
 /**
- * Thin wrapper around the yt-dlp-exec binary. The bundled typings expose a
- * narrow, older set of flags, so we accept any camelCase flag (mapped to
- * kebab-case by the library) and cast once here to keep call sites clean.
+ * YouTube URL parsing / validation helpers.
+ * Pure functions – shared by both the browser and the route handler.
  */
-export function invokeYtDlp(
-  url: string,
-  flags: Record<string, unknown>,
-  opts?: { cwd?: string; timeout?: number; env?: Record<string, string> },
-): Promise<any> {
-  return youtubedl(url, flags as any, opts as any);
+
+const YT_ID = /^[a-zA-Z0-9_-]{11}$/;
+
+const ALLOWED_HOSTS = new Set([
+  "youtube.com",
+  "www.youtube.com",
+  "m.youtube.com",
+  "music.youtube.com",
+  "youtube-nocookie.com",
+  "www.youtube-nocookie.com",
+  "youtu.be",
+  "www.youtu.be",
+]);
+
+export type ParseResult =
+  | { ok: true; videoId: string; watchUrl: string }
+  | { ok: false; code: "EMPTY_INPUT" | "INVALID_URL" | "NOT_YOUTUBE"; message: string };
+
+/** Quick client-side check used to enable/disable the submit button. */
+export function looksLikeYouTubeUrl(raw: string): boolean {
+  return parseYouTubeUrl(raw).ok;
 }
 
-function isDownloadBlocked(err: unknown): boolean {
-  const msg = String(
-    (err as { stderr?: string } | null)?.stderr ||
-      (err as { message?: string } | null)?.message ||
-      "",
-  ).toLowerCase();
-  return (
-    msg.includes("403") ||
-    msg.includes("http error 4") ||
-    msg.includes("unable to download video data") ||
-    msg.includes("premature end of file") ||
-    msg.includes("connection reset")
-  );
-}
+export function parseYouTubeUrl(raw: string): ParseResult {
+  const input = (raw ?? "").trim();
 
-/**
- * YouTube intermittently rate-limits (HTTP 403) the default Android-VR client
- * from datacenter IPs. When that happens we transparently retry the same
- * command through alternate player clients, which serve different streams.
- */
-export async function invokeYtDlpWithFallback(
-  url: string,
-  flags: Record<string, unknown>,
-  opts?: { cwd?: string; timeout?: number; env?: Record<string, string> },
-): Promise<any> {
-  try {
-    return await invokeYtDlp(url, flags, opts);
-  } catch (firstError) {
-    if (!isDownloadBlocked(firstError)) throw firstError;
-    let lastError = firstError;
-    for (const client of ["android", "ios"]) {
-      try {
-        return await invokeYtDlp(
-          url,
-          { ...flags, extractorArgs: `youtube:player_client=${client}` },
-          opts,
-        );
-      } catch (err) {
-        lastError = err;
-      }
-    }
-    throw lastError;
+  if (!input) {
+    return { ok: false, code: "EMPTY_INPUT", message: "Paste a YouTube link to get started." };
   }
+
+  // Bare video id support: "dQw4w9WgXcQ"
+  if (YT_ID.test(input)) {
+    return { ok: true, videoId: input, watchUrl: watchUrlFor(input) };
+  }
+
+  const withProtocol = /^https?:\/\//i.test(input) ? input : `https://${input}`;
+
+  let url: URL;
+  try {
+    url = new URL(withProtocol);
+  } catch {
+    return { ok: false, code: "INVALID_URL", message: "That does not look like a valid URL." };
+  }
+
+  const host = url.hostname.toLowerCase();
+  if (!ALLOWED_HOSTS.has(host)) {
+    return {
+      ok: false,
+      code: "NOT_YOUTUBE",
+      message: "Only youtube.com and youtu.be links are supported.",
+    };
+  }
+
+  const id = extractId(url);
+  if (!id) {
+    return {
+      ok: false,
+      code: "INVALID_URL",
+      message: "Could not find a video id in that link.",
+    };
+  }
+
+  return { ok: true, videoId: id, watchUrl: watchUrlFor(id) };
 }
 
-export function isYouTubeUrl(url: string): boolean {
-  return /^(https?:\/\/)?(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//i.test(url.trim());
+function extractId(url: URL): string | null {
+  const host = url.hostname.toLowerCase();
+  const segments = url.pathname.split("/").filter(Boolean);
+
+  if (host.endsWith("youtu.be")) {
+    return YT_ID.test(segments[0] ?? "") ? segments[0] : null;
+  }
+
+  const queryId = url.searchParams.get("v");
+  if (queryId && YT_ID.test(queryId)) return queryId;
+
+  // /shorts/<id>, /embed/<id>, /live/<id>, /v/<id>
+  const prefixed = ["shorts", "embed", "live", "v"];
+  if (segments.length >= 2 && prefixed.includes(segments[0])) {
+    return YT_ID.test(segments[1]) ? segments[1] : null;
+  }
+
+  // /watch/<id>
+  if (segments.length >= 2 && segments[0] === "watch" && YT_ID.test(segments[1])) {
+    return segments[1];
+  }
+
+  return null;
 }
 
-export function extractVideoId(url: string): string | null {
-  const match = url.match(
-    /(?:youtube\.com\/(?:watch\?.*?v=|shorts\/|embed\/|live\/|v\/)|youtu\.be\/)([\w-]{11})/i,
-  );
-  return match ? match[1] : null;
+export function watchUrlFor(videoId: string): string {
+  return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
-export function isPlaylistUrl(url: string): boolean {
-  return /youtube\.com\/playlist/i.test(url) || /[?&]list=[\w-]+/i.test(url);
+export function thumbnailFor(videoId: string): string {
+  return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 }
 
-export function mp4FormatSelector(quality: string): string {
-  return MP4_FORMAT_SELECTORS[quality] ?? MP4_FORMAT_SELECTORS["720"];
+/** ISO-8601 duration ("PT4M13S") → seconds. */
+export function iso8601ToSeconds(iso: string): number | null {
+  const m = /^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso);
+  if (!m) return null;
+  const [, d, h, min, s] = m;
+  const total =
+    Number(d ?? 0) * 86400 + Number(h ?? 0) * 3600 + Number(min ?? 0) * 60 + Number(s ?? 0);
+  return Number.isFinite(total) && total > 0 ? total : null;
 }
 
-export function formatDuration(seconds?: number | null): string {
-  if (!seconds || !Number.isFinite(seconds)) return "LIVE";
+export function formatDuration(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return "--:--";
   const total = Math.round(seconds);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
-  const mm = String(m).padStart(2, "0");
-  const ss = String(s).padStart(2, "0");
-  return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-export function formatViewCount(count?: number | null): string {
-  if (!count) return "";
-  if (count >= 1_000_000_000) return `${(count / 1_000_000_000).toFixed(1)}B views`;
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M views`;
-  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K views`;
-  return `${count} views`;
-}
-
-export function sanitizeFilename(title: string): string {
-  const cleaned = title
-    // eslint-disable-next-line no-control-regex
-    .replace(/[<>:"/\\|?*%\u0000-\u001F]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\.+$/g, "");
-  return cleaned.slice(0, 120) || "cholytube";
-}
-
-interface RawThumbnail {
-  url?: string;
-  width?: number;
-  height?: number;
-}
-
-function pickThumbnail(thumbnails?: RawThumbnail[]): string | null {
-  if (!thumbnails || thumbnails.length === 0) return null;
-  const ranked = [...thumbnails].sort(
-    (a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0),
-  );
-  return ranked[0]?.url ?? null;
-}
-
-/**
- * Normalize the raw `--dump-single-json` payload (single video or playlist)
- * into a UI-friendly `VideoInfo`. For playlists, the first entry is used as the
- * representative item shown on the preview card.
- */
-export function normalizeVideoInfo(raw: any, fallbackUrl: string): VideoInfo {
-  let entry = raw;
-  let isPlaylist = false;
-  let playlistTitle: string | null = null;
-  let playlistCount: number | null = null;
-
-  if (raw && Array.isArray(raw.entries) && raw.entries.length > 0) {
-    isPlaylist = true;
-    playlistTitle = typeof raw.title === "string" ? raw.title : null;
-    playlistCount = raw.entries.length;
-    const first = raw.entries.find(
-      (e: any) => e && (e.id || e.webpage_url || e.url),
-    );
-    if (first) entry = first;
+export function formatBytes(bytes: number | null): string {
+  if (bytes === null || !Number.isFinite(bytes) || bytes <= 0) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
   }
-
-  const title =
-    typeof entry?.title === "string" && entry.title ? entry.title : "Untitled";
-  const channel =
-    entry?.channel ||
-    entry?.uploader ||
-    entry?.uploader_id ||
-    entry?.creator ||
-    "Unknown";
-  const channelUrl = entry?.channel_url || entry?.uploader_url || null;
-  const duration = typeof entry?.duration === "number" ? entry.duration : null;
-  const isLive = Boolean(entry?.is_live);
-  const width = entry?.width;
-  const height = entry?.height;
-  const isShort =
-    !isPlaylist &&
-    typeof width === "number" &&
-    typeof height === "number" &&
-    height > width;
-
-  return {
-    id: typeof entry?.id === "string" ? entry.id : "",
-    title,
-    channel,
-    channelUrl,
-    duration,
-    durationLabel: isLive ? "LIVE" : formatDuration(duration),
-    thumbnail:
-      typeof entry?.thumbnail === "string"
-        ? entry.thumbnail
-        : pickThumbnail(entry?.thumbnails),
-    viewCount: typeof entry?.view_count === "number" ? entry.view_count : null,
-    uploadDate: entry?.upload_date ?? null,
-    isLive,
-    isShort,
-    isPlaylist,
-    playlistTitle,
-    playlistCount,
-    webpageUrl: entry?.webpage_url || entry?.original_url || entry?.url || fallbackUrl,
-  };
-}
-
-export async function fetchVideoInfo(url: string): Promise<VideoInfo> {
-  const raw = await invokeYtDlp(
-    url,
-    {
-      dumpSingleJson: true,
-      skipDownload: true,
-      noWarnings: true,
-      noCheckCertificates: true,
-    },
-    { timeout: 90_000 },
-  );
-  return normalizeVideoInfo(raw, url);
-}
-
-export async function findFile(
-  dir: string,
-  exts: string[],
-  prefix?: string,
-): Promise<string | null> {
-  const entries = await fsp.readdir(dir);
-  for (const name of entries) {
-    const ext = path.extname(name).toLowerCase();
-    if (!exts.includes(ext)) continue;
-    if (prefix && !name.startsWith(prefix)) continue;
-    if (/\.(part|ytdl|frag|temp)$/i.test(name)) continue;
-    return path.join(dir, name);
-  }
-  return null;
-}
-
-export function friendlyError(err: unknown): string {
-  const source =
-    (err as { stderr?: string } | null)?.stderr ||
-    (err as { stdout?: string } | null)?.stdout ||
-    (err as { message?: string } | null)?.message ||
-    String(err || "");
-  const raw = String(source).toLowerCase();
-
-  if (raw.includes("sign in to confirm") || raw.includes("confirm your age")) {
-    return "YouTube requires sign-in or age verification for this video. Try a different one.";
-  }
-  if (raw.includes("private video") || raw.includes("this video is private")) {
-    return "This video is private and can't be downloaded.";
-  }
-  if (
-    raw.includes("403") ||
-    raw.includes("http error 4") ||
-    raw.includes("unable to download video data")
-  ) {
-    return "YouTube temporarily blocked this download (rate limit). Please try again in a moment.";
-  }
-  if (
-    raw.includes("not available in your country") ||
-    raw.includes("video unavailable") ||
-    raw.includes("this video is not available")
-  ) {
-    return "This video is not available in your region.";
-  }
-  if (raw.includes("copyright") || raw.includes("has been removed")) {
-    return "This video was removed or is no longer available.";
-  }
-  if (raw.includes("unsupported url") || raw.includes("is not a valid url")) {
-    return "That doesn't look like a valid YouTube link.";
-  }
-  if (raw.includes("ffmpeg") || raw.includes("ffprobe")) {
-    return "FFmpeg is missing or failed to process the media.";
-  }
-  if (raw.includes("timed out") || raw.includes("etimedout")) {
-    return "The request timed out. Please try again.";
-  }
-  return "Something went wrong while processing your request. Please try again.";
+  return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }
