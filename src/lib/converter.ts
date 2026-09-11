@@ -14,6 +14,11 @@ const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
+// Error codes that are worth retrying because they are usually transient.
+const RETRYABLE_CODES = new Set([10, 12, 13, 14, 215, 429, 502]);
+
+const MAX_INIT_RETRIES = 3;
+
 function y2mateHeaders(extra?: Record<string, string>): HeadersInit {
   return {
     "User-Agent": BROWSER_UA,
@@ -48,8 +53,13 @@ const ERROR_MESSAGES: Record<number, string> = {
   1: "Invalid video. Make sure the link points to a real YouTube video.",
   2: "Video is private or has been removed.",
   3: "YouTube rejected the request. Try again in a moment.",
+  4: "Progress check failed. Try again.",
   5: "The conversion service is currently unavailable.",
-  12: "The conversion service rejected our request (anti-bot). Try again.",
+  10: "The conversion service couldn't process this video. It may be live, members-only, or have protected streams. Try a different video.",
+  12: "The conversion service rejected our request (anti-bot). Try again in a moment.",
+  13: "The conversion service rate-limited us. Please wait a few seconds and try again.",
+  14: "Conversion session expired. Please start a new download.",
+  16: "This video isn't available to the conversion service (private, deleted, or region-locked).",
   215: "YouTube refused the request (rate-limited or region-locked).",
   403: "Access denied by YouTube.",
   429: "Too many requests. Please wait a moment and try again.",
@@ -64,7 +74,7 @@ function explainError(code: number): string {
   if (code >= 100 && code < 600) {
     return `The conversion service returned an error (code ${code}).`;
   }
-  return `Unexpected error from the conversion service (code ${code}).`;
+  return `The conversion service returned an unexpected response (code ${code}). Please try again in a moment.`;
 }
 
 // The "progressURL" and "downloadURL" returned by the worker are actually
@@ -75,6 +85,29 @@ function decodeWorkerUrl(encoded: string): string {
 }
 
 export async function initConversion(
+  videoId: string,
+  format: Format,
+): Promise<ConverterInitResult> {
+  let lastResult: ConverterInitResult = {
+    ok: false,
+    code: 502,
+    error: "The conversion service is unavailable.",
+  };
+
+  for (let attempt = 0; attempt < MAX_INIT_RETRIES; attempt++) {
+    const result = await initConversionOnce(videoId, format);
+    if (result.ok) return result;
+    lastResult = result;
+    // Only retry transient errors.
+    if (!RETRYABLE_CODES.has(result.code)) return result;
+    // Brief pause before retrying.
+    await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+  }
+
+  return lastResult;
+}
+
+async function initConversionOnce(
   videoId: string,
   format: Format,
 ): Promise<ConverterInitResult> {

@@ -50,13 +50,15 @@ export async function POST(req: NextRequest) {
   const ticked = (await tickJob(job.id)) ?? job;
 
   return NextResponse.json({
-    ok: true,
+    ok: ticked.status !== "error",
     jobId: ticked.id,
     status: ticked.status,
     progress: ticked.progress,
     title: ticked.title,
     format: ticked.format,
     error: ticked.error,
+    errorCode: ticked.errorCode,
+    videoId: parsed.videoId,
   });
 }
 
@@ -77,13 +79,14 @@ export async function GET(req: NextRequest) {
   }
   const job = (await tickJob(id)) ?? existing;
   return NextResponse.json({
-    ok: true,
+    ok: job.status !== "error",
     jobId: job.id,
     status: job.status,
     progress: job.progress,
     title: job.title,
     format: job.format,
     error: job.error,
+    errorCode: job.errorCode,
     videoId: job.videoId,
   });
 }

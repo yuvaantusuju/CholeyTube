@@ -31,13 +31,33 @@ type HistoryItem = {
   createdAt: number;
 };
 
+type JobStatus =
+  | "checking"
+  | "extracting"
+  | "converting"
+  | "ready"
+  | "error";
+
 type JobState = {
   jobId: string;
-  status: "checking" | "extracting" | "converting" | "ready" | "error";
+  status: JobStatus;
   progress: number;
   title: string;
   format: "mp3" | "mp4";
   error?: string;
+  errorCode?: number;
+};
+
+type DownloadResponse = {
+  ok: boolean;
+  jobId: string;
+  status: JobStatus;
+  progress: number;
+  title: string;
+  format: "mp3" | "mp4";
+  error?: string;
+  errorCode?: number;
+  videoId?: string;
 };
 
 const SAMPLE_URLS = [
@@ -46,7 +66,7 @@ const SAMPLE_URLS = [
   "https://www.youtube.com/shorts/dQw4w9WgXcQ",
 ];
 
-const STATUS_LABEL: Record<JobState["status"], string> = {
+const STATUS_LABEL: Record<JobStatus, string> = {
   checking: "Checking the video",
   extracting: "Extracting audio/video streams",
   converting: "Converting on the server",
@@ -168,19 +188,14 @@ export default function CholeyTubeApp() {
           videoTitle: result.video.title,
         }),
       });
-      const data = (await res.json()) as
-        | {
-            ok: true;
-            jobId: string;
-            status: JobState["status"];
-            progress: number;
-            title: string;
-            format: "mp3" | "mp4";
-            error?: string;
-          }
-        | AnalyzeError;
+      const data = (await res.json()) as DownloadResponse;
       if (!data.ok) {
-        setError(data.error);
+        setError(data.error ?? "Couldn't start the conversion.");
+        setDownloading(false);
+        return;
+      }
+      if (data.status === "error") {
+        setError(data.error ?? "The conversion failed.");
         setDownloading(false);
         return;
       }
@@ -191,13 +206,9 @@ export default function CholeyTubeApp() {
         title: data.title,
         format: data.format,
         error: data.error,
+        errorCode: data.errorCode,
       });
       if (data.status === "ready") {
-        setDownloading(false);
-        return;
-      }
-      if (data.status === "error") {
-        setError(data.error ?? "The conversion failed.");
         setDownloading(false);
         return;
       }
@@ -209,20 +220,10 @@ export default function CholeyTubeApp() {
           const pollRes = await fetch(
             `/api/download?jobId=${encodeURIComponent(data.jobId)}`,
           );
-          const pollData = (await pollRes.json()) as
-            | {
-                ok: true;
-                jobId: string;
-                status: JobState["status"];
-                progress: number;
-                title: string;
-                format: "mp3" | "mp4";
-                error?: string;
-              }
-            | AnalyzeError;
+          const pollData = (await pollRes.json()) as DownloadResponse;
           if (!pollData.ok) {
             stopPolling();
-            setError(pollData.error);
+            setError(pollData.error ?? "The conversion failed.");
             setDownloading(false);
             return;
           }
@@ -233,6 +234,7 @@ export default function CholeyTubeApp() {
             title: pollData.title,
             format: pollData.format,
             error: pollData.error,
+            errorCode: pollData.errorCode,
           });
           if (pollData.status === "ready") {
             stopPolling();
@@ -793,7 +795,34 @@ export default function CholeyTubeApp() {
 
                 {job.status === "error" && job.error && (
                   <div className="mt-5 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
-                    {job.error}
+                    <p className="font-medium text-red-100">
+                      {job.error}
+                    </p>
+                    {job.errorCode !== undefined && (
+                      <p className="mt-1 text-xs text-red-200/70">
+                        Error code: {job.errorCode}
+                      </p>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        onClick={() => {
+                          stopPolling();
+                          setJob(null);
+                          void startConversion();
+                        }}
+                        className="rounded-full border border-red-400/40 bg-red-500/20 px-3 py-1 text-xs font-medium text-red-100 hover:bg-red-500/30"
+                      >
+                        Try again
+                      </button>
+                      <a
+                        href="https://y2mate.gs"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-white hover:bg-white/10"
+                      >
+                        Open y2mate.gs ↗
+                      </a>
+                    </div>
                   </div>
                 )}
 
