@@ -110,7 +110,22 @@ export default function CholeyTubeApp() {
   const [downloadToast, setDownloadToast] = useState<string | null>(null);
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [, setTick] = useState(0);
+
+  // Re-render every second so the elapsed-time counter updates.
+  useEffect(() => {
+    if (!startedAt) return;
+    tickRef.current = setInterval(() => setTick((n) => n + 1), 500);
+    return () => {
+      if (tickRef.current) {
+        clearInterval(tickRef.current);
+        tickRef.current = null;
+      }
+    };
+  }, [startedAt]);
 
   // Hydrate from localStorage on mount.
   useEffect(() => {
@@ -124,6 +139,7 @@ export default function CholeyTubeApp() {
       pollRef.current = null;
     }
     setPolling(false);
+    setStartedAt(null);
   }, []);
 
   // Cleanup the poll when unmounting.
@@ -174,9 +190,21 @@ export default function CholeyTubeApp() {
 
   const startConversion = async () => {
     if (!result) return;
+
+    // Show an optimistic job immediately so the user always sees feedback.
+    // We replace the placeholder jobId once the real one arrives from the
+    // server so the progress card appears within milliseconds of clicking.
+    const optimisticId = `pending_${Date.now()}`;
+    setJob({
+      jobId: optimisticId,
+      status: "checking",
+      progress: 0,
+      title: result.video.title,
+      format: selectedFormat,
+    });
     setDownloading(true);
+    setStartedAt(Date.now());
     setError(null);
-    setJob(null);
 
     try {
       const res = await fetch("/api/download", {
@@ -188,14 +216,30 @@ export default function CholeyTubeApp() {
           videoTitle: result.video.title,
         }),
       });
+
+      if (!res.ok) {
+        const fallback = `Server responded with ${res.status}.`;
+        try {
+          const errBody = (await res.json()) as { error?: string };
+          setError(errBody.error ?? fallback);
+        } catch {
+          setError(fallback);
+        }
+        setJob(null);
+        setDownloading(false);
+        return;
+      }
+
       const data = (await res.json()) as DownloadResponse;
       if (!data.ok) {
         setError(data.error ?? "Couldn't start the conversion.");
+        setJob(null);
         setDownloading(false);
         return;
       }
       if (data.status === "error") {
         setError(data.error ?? "The conversion failed.");
+        setJob(null);
         setDownloading(false);
         return;
       }
@@ -203,15 +247,28 @@ export default function CholeyTubeApp() {
         jobId: data.jobId,
         status: data.status,
         progress: data.progress,
-        title: data.title,
+        title: data.title || result.video.title,
         format: data.format,
         error: data.error,
         errorCode: data.errorCode,
       });
       if (data.status === "ready") {
         setDownloading(false);
+        // Scroll the progress card into view so the Download button is visible.
+        setTimeout(() => {
+          document
+            .getElementById("job-progress-card")
+            ?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 50);
         return;
       }
+
+      // Scroll to the progress card so the user sees it.
+      setTimeout(() => {
+        document
+          .getElementById("job-progress-card")
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 50);
 
       // Poll for progress.
       setPolling(true);
@@ -220,10 +277,15 @@ export default function CholeyTubeApp() {
           const pollRes = await fetch(
             `/api/download?jobId=${encodeURIComponent(data.jobId)}`,
           );
+          if (!pollRes.ok) {
+            // Network glitch — keep polling, don't kill the job.
+            return;
+          }
           const pollData = (await pollRes.json()) as DownloadResponse;
           if (!pollData.ok) {
             stopPolling();
             setError(pollData.error ?? "The conversion failed.");
+            setJob(null);
             setDownloading(false);
             return;
           }
@@ -231,7 +293,7 @@ export default function CholeyTubeApp() {
             jobId: pollData.jobId,
             status: pollData.status,
             progress: pollData.progress,
-            title: pollData.title,
+            title: pollData.title || result.video.title,
             format: pollData.format,
             error: pollData.error,
             errorCode: pollData.errorCode,
@@ -239,41 +301,40 @@ export default function CholeyTubeApp() {
           if (pollData.status === "ready") {
             stopPolling();
             setDownloading(false);
+            setTimeout(() => {
+              document
+                .getElementById("job-progress-card")
+                ?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }, 50);
             // Add to history
-            if (result) {
-              const entry: HistoryItem = {
-                videoId: result.video.videoId,
-                videoTitle: pollData.title || result.video.title,
-                format: pollData.format,
-                createdAt: Date.now(),
-              };
-              setHistory((curr) => {
-                const next = [entry, ...curr].slice(0, 30);
-                saveLocal(HIST_KEY, next);
-                return next;
-              });
-            }
+            const entry: HistoryItem = {
+              videoId: result.video.videoId,
+              videoTitle: pollData.title || result.video.title,
+              format: pollData.format,
+              createdAt: Date.now(),
+            };
+            setHistory((curr) => {
+              const next = [entry, ...curr].slice(0, 30);
+              saveLocal(HIST_KEY, next);
+              return next;
+            });
           } else if (pollData.status === "error") {
             stopPolling();
             setError(pollData.error ?? "The conversion failed.");
+            setJob(null);
             setDownloading(false);
           }
-        } catch (err) {
-          stopPolling();
-          setError(
-            err instanceof Error
-              ? `Polling error: ${err.message}`
-              : "Polling error.",
-          );
-          setDownloading(false);
+        } catch {
+          // Polling transient error — keep polling on next tick.
         }
-      }, 2500);
+      }, 2000);
     } catch (err) {
       setError(
         err instanceof Error
           ? `Couldn't start the conversion: ${err.message}`
           : "Couldn't start the conversion.",
       );
+      setJob(null);
       setDownloading(false);
     }
   };
@@ -404,6 +465,43 @@ export default function CholeyTubeApp() {
       </div>
 
       {/* Header */}
+      {/* Sticky top conversion banner — always visible while a job is running. */}
+      {job && job.status !== "ready" && job.status !== "error" && (
+        <div className="sticky top-0 z-40 border-b border-white/10 bg-gradient-to-r from-[var(--accent-red)]/20 via-[var(--accent-violet)]/20 to-[var(--accent-cyan)]/20 backdrop-blur">
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-6 py-2.5 text-sm">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/10">
+                <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+              </span>
+              <div className="min-w-0">
+                <p className="truncate font-medium text-white">
+                  Converting to {job.format.toUpperCase()}…
+                </p>
+                <p className="truncate text-xs text-[var(--text-soft)]">
+                  {job.title} · {STATUS_LABEL[job.status]}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                stopPolling();
+                setJob(null);
+                setDownloading(false);
+              }}
+              className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white hover:bg-white/10"
+            >
+              Cancel
+            </button>
+          </div>
+          <div className="h-0.5 overflow-hidden bg-white/5">
+            <div
+              className="h-full w-1/3 rounded-full bg-gradient-to-r from-[var(--accent-red)] via-[var(--accent-pink)] to-[var(--accent-amber)]"
+              style={{ animation: "shimmer 1.6s linear infinite" }}
+            />
+          </div>
+        </div>
+      )}
+
       <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
         <div className="flex items-center gap-3">
           <div className="relative">
@@ -646,12 +744,17 @@ export default function CholeyTubeApp() {
                 <button
                   onClick={startConversion}
                   disabled={downloading}
-                  className="btn-primary group inline-flex items-center gap-3 rounded-2xl px-8 py-4 text-base disabled:opacity-50"
+                  className="btn-primary group relative min-w-[260px] overflow-hidden rounded-2xl px-8 py-4 text-base disabled:opacity-100"
                 >
                   {downloading ? (
                     <>
                       <span className="h-5 w-5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                      Starting conversion…
+                      <span className="flex flex-col items-start leading-tight">
+                        <span>Starting conversion…</span>
+                        {startedAt && (
+                          <ElapsedTime from={startedAt} />
+                        )}
+                      </span>
                     </>
                   ) : (
                     <>
@@ -688,9 +791,23 @@ export default function CholeyTubeApp() {
 
             {/* Job progress */}
             {job && (
-              <div className="glass-strong mt-8 overflow-hidden rounded-3xl p-6">
+              <div
+                id="job-progress-card"
+                className="glass-strong mt-8 overflow-hidden rounded-3xl border-2 border-[var(--accent-pink)]/30 p-6 fade-up shadow-2xl shadow-[var(--accent-red)]/20"
+              >
+                {/* Indeterminate progress bar at the top while we wait */}
+                {job.status !== "ready" && job.status !== "error" && (
+                  <div className="mb-5 -mt-2 -mx-2 h-1 overflow-hidden rounded-full bg-white/5">
+                    <div
+                      className="h-full w-1/3 rounded-full bg-gradient-to-r from-transparent via-[var(--accent-pink)] to-transparent"
+                      style={{
+                        animation: "shimmer 1.6s linear infinite",
+                      }}
+                    />
+                  </div>
+                )}
                 <div className="flex items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0 flex-1">
                     <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent-cyan)]">
                       {job.format.toUpperCase()} conversion
                     </p>
@@ -699,6 +816,14 @@ export default function CholeyTubeApp() {
                     </p>
                     <p className="mt-1 text-sm text-[var(--text-soft)]">
                       {STATUS_LABEL[job.status]}
+                      {startedAt &&
+                        job.status !== "ready" &&
+                        job.status !== "error" && (
+                          <>
+                            {" · "}
+                            <ElapsedTime from={startedAt} />
+                          </>
+                        )}
                     </p>
                   </div>
                   <span className="grid h-10 w-10 place-items-center rounded-xl bg-white/5">
@@ -1095,6 +1220,22 @@ export default function CholeyTubeApp() {
         </div>
       )}
     </div>
+  );
+}
+
+function ElapsedTime({ from }: { from: number }) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => force((n) => n + 1), 500);
+    return () => clearInterval(id);
+  }, []);
+  const elapsed = Math.max(0, Math.floor((Date.now() - from) / 1000));
+  const label =
+    elapsed < 60
+      ? `${elapsed}s`
+      : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+  return (
+    <span className="text-[11px] font-normal opacity-80">{label} elapsed</span>
   );
 }
 
