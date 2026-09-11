@@ -1,133 +1,202 @@
-/**
- * YouTube URL parsing / validation helpers.
- * Pure functions – shared by both the browser and the route handler.
- */
+export type ParsedYouTube = {
+  ok: true;
+  videoId: string;
+  canonicalUrl: string;
+} | {
+  ok: false;
+  error: string;
+};
 
-const YT_ID = /^[a-zA-Z0-9_-]{11}$/;
+const ID_REGEX = /^[a-zA-Z0-9_-]{11}$/;
 
-const ALLOWED_HOSTS = new Set([
-  "youtube.com",
-  "www.youtube.com",
-  "m.youtube.com",
-  "music.youtube.com",
-  "youtube-nocookie.com",
-  "www.youtube-nocookie.com",
-  "youtu.be",
-  "www.youtu.be",
-]);
-
-export type ParseResult =
-  | { ok: true; videoId: string; watchUrl: string }
-  | { ok: false; code: "EMPTY_INPUT" | "INVALID_URL" | "NOT_YOUTUBE"; message: string };
-
-/** Quick client-side check used to enable/disable the submit button. */
-export function looksLikeYouTubeUrl(raw: string): boolean {
-  return parseYouTubeUrl(raw).ok;
-}
-
-export function parseYouTubeUrl(raw: string): ParseResult {
-  const input = (raw ?? "").trim();
-
-  if (!input) {
-    return { ok: false, code: "EMPTY_INPUT", message: "Paste a YouTube link to get started." };
+export function parseYouTubeUrl(input: string): ParsedYouTube {
+  if (!input || typeof input !== "string") {
+    return { ok: false, error: "Please enter a YouTube URL or video ID." };
   }
 
-  // Bare video id support: "dQw4w9WgXcQ"
-  if (YT_ID.test(input)) {
-    return { ok: true, videoId: input, watchUrl: watchUrlFor(input) };
-  }
+  const trimmed = input.trim();
 
-  const withProtocol = /^https?:\/\//i.test(input) ? input : `https://${input}`;
+  // Bare 11-char video ID
+  if (ID_REGEX.test(trimmed)) {
+    return {
+      ok: true,
+      videoId: trimmed,
+      canonicalUrl: `https://www.youtube.com/watch?v=${trimmed}`,
+    };
+  }
 
   let url: URL;
   try {
-    url = new URL(withProtocol);
+    url = new URL(trimmed.startsWith("http") ? trimmed : `https://${trimmed}`);
   } catch {
-    return { ok: false, code: "INVALID_URL", message: "That does not look like a valid URL." };
+    return { ok: false, error: "That doesn't look like a valid URL." };
   }
 
-  const host = url.hostname.toLowerCase();
-  if (!ALLOWED_HOSTS.has(host)) {
-    return {
-      ok: false,
-      code: "NOT_YOUTUBE",
-      message: "Only youtube.com and youtu.be links are supported.",
-    };
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+
+  const extractFromQuery = (q: string | null) => {
+    if (!q) return null;
+    const m = q.match(/^[a-zA-Z0-9_-]{11}$/);
+    return m ? m[0] : null;
+  };
+
+  if (host === "youtu.be") {
+    const id = extractFromQuery(url.pathname.replace(/^\//, "").split("/")[0]);
+    if (id) {
+      return {
+        ok: true,
+        videoId: id,
+        canonicalUrl: `https://www.youtube.com/watch?v=${id}`,
+      };
+    }
   }
 
-  const id = extractId(url);
-  if (!id) {
-    return {
-      ok: false,
-      code: "INVALID_URL",
-      message: "Could not find a video id in that link.",
-    };
+  if (
+    host === "youtube.com" ||
+    host === "m.youtube.com" ||
+    host === "music.youtube.com"
+  ) {
+    const v = url.searchParams.get("v");
+    if (v && ID_REGEX.test(v)) {
+      return {
+        ok: true,
+        videoId: v,
+        canonicalUrl: `https://www.youtube.com/watch?v=${v}`,
+      };
+    }
+
+    const parts = url.pathname.split("/").filter(Boolean);
+    const idx = parts.findIndex((p) =>
+      ["shorts", "embed", "live", "v"].includes(p),
+    );
+    if (idx >= 0 && parts[idx + 1] && ID_REGEX.test(parts[idx + 1])) {
+      const id = parts[idx + 1];
+      return {
+        ok: true,
+        videoId: id,
+        canonicalUrl: `https://www.youtube.com/watch?v=${id}`,
+      };
+    }
   }
 
-  return { ok: true, videoId: id, watchUrl: watchUrlFor(id) };
+  return {
+    ok: false,
+    error: "We couldn't find a YouTube video ID in that link.",
+  };
 }
 
-function extractId(url: URL): string | null {
-  const host = url.hostname.toLowerCase();
-  const segments = url.pathname.split("/").filter(Boolean);
+export type VideoMetadata = {
+  videoId: string;
+  title: string;
+  author: string;
+  thumbnail: string;
+  canonicalUrl: string;
+  embedUrl: string;
+};
 
-  if (host.endsWith("youtu.be")) {
-    return YT_ID.test(segments[0] ?? "") ? segments[0] : null;
+export type MetadataResult =
+  | { ok: true; data: VideoMetadata }
+  | { ok: false; error: string };
+
+export async function fetchVideoMetadata(
+  videoId: string,
+  canonicalUrl: string,
+): Promise<MetadataResult> {
+  const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(
+    canonicalUrl,
+  )}&format=json`;
+
+  try {
+    const res = await fetch(oembedUrl, {
+      next: { revalidate: 60 * 30 },
+      headers: { "User-Agent": "CholeyTube/1.0" },
+    });
+
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403 || res.status === 404) {
+        return {
+          ok: false,
+          error:
+            "YouTube blocked metadata lookup for this video. It may be private, age-restricted, or region-locked.",
+        };
+      }
+      return {
+        ok: false,
+        error: `YouTube responded with status ${res.status}.`,
+      };
+    }
+
+    const data = (await res.json()) as {
+      title?: string;
+      author_name?: string;
+      thumbnail_url?: string;
+    };
+
+    return {
+      ok: true,
+      data: {
+        videoId,
+        title: data.title ?? "Untitled video",
+        author: data.author_name ?? "Unknown channel",
+        thumbnail:
+          data.thumbnail_url ??
+          `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        canonicalUrl,
+        embedUrl: `https://www.youtube.com/embed/${videoId}`,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? `Couldn't reach YouTube: ${err.message}`
+          : "Couldn't reach YouTube.",
+    };
   }
-
-  const queryId = url.searchParams.get("v");
-  if (queryId && YT_ID.test(queryId)) return queryId;
-
-  // /shorts/<id>, /embed/<id>, /live/<id>, /v/<id>
-  const prefixed = ["shorts", "embed", "live", "v"];
-  if (segments.length >= 2 && prefixed.includes(segments[0])) {
-    return YT_ID.test(segments[1]) ? segments[1] : null;
-  }
-
-  // /watch/<id>
-  if (segments.length >= 2 && segments[0] === "watch" && YT_ID.test(segments[1])) {
-    return segments[1];
-  }
-
-  return null;
 }
 
-export function watchUrlFor(videoId: string): string {
+export type DownloadFormat = "mp3" | "mp4";
+
+export type DownloadOption = {
+  id: string;
+  format: DownloadFormat;
+  label: string;
+  description: string;
+  badge?: string;
+};
+
+// The real y2mate.gs only exposes two options: MP3 and MP4.
+export function buildDownloadOptions(): DownloadOption[] {
+  return [
+    {
+      id: "mp4",
+      format: "mp4",
+      label: "MP4 — up to 720p",
+      description:
+        "Video + audio in one file. Plays on every device, ready to share or save.",
+      badge: "Video",
+    },
+    {
+      id: "mp3",
+      format: "mp3",
+      label: "MP3 — 192 kbps",
+      description:
+        "Audio-only track, the same default quality y2mate.gs ships with.",
+      badge: "Audio",
+    },
+  ];
+}
+
+export function buildWatchUrl(videoId: string): string {
   return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
-export function thumbnailFor(videoId: string): string {
-  return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-}
-
-/** ISO-8601 duration ("PT4M13S") → seconds. */
-export function iso8601ToSeconds(iso: string): number | null {
-  const m = /^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso);
-  if (!m) return null;
-  const [, d, h, min, s] = m;
-  const total =
-    Number(d ?? 0) * 86400 + Number(h ?? 0) * 3600 + Number(min ?? 0) * 60 + Number(s ?? 0);
-  return Number.isFinite(total) && total > 0 ? total : null;
-}
-
-export function formatDuration(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return "--:--";
-  const total = Math.round(seconds);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
-}
-
-export function formatBytes(bytes: number | null): string {
-  if (bytes === null || !Number.isFinite(bytes) || bytes <= 0) return "—";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+export function buildThumbnails(videoId: string) {
+  return {
+    max: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+    sd: `https://i.ytimg.com/vi/${videoId}/sddefault.jpg`,
+    hq: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    mq: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+  };
 }
