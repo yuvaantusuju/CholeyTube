@@ -1,15 +1,11 @@
-import type { Metadata, Viewport } from "next";
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CholeyTube — YouTube Downloader",
+  title: "CholeyTube — Fast YouTube Downloader",
   description:
-    "Paste a YouTube link, pick a format, and grab the video as MP4 or MP3. Powered by y2mate.gs.",
-};
-
-export const viewport: Viewport = {
-  themeColor: "#05010f",
+    "Download YouTube videos and audio in any format. Beautiful, fast, and free.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
