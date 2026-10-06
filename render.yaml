@@ -1,0 +1,41 @@
+# Render Blueprint — CholeyTube
+# One-click deploy: render.com → New → Blueprint → connect this repo.
+#
+# What this does:
+#   1. Provisions a free PostgreSQL instance.
+#   2. Provisions a Node web service that builds the Next.js app and serves it.
+#
+# Notes:
+#   - yt-dlp + ffmpeg are bundled via npm (`youtube-dl-exec` and `ffmpeg-static`),
+#     so the runtime image stays slim. No system ffmpeg install required.
+#   - The free web service spins down after inactivity; the first request after
+#     a cold start may take a few extra seconds while the Node process boots.
+#   - We disable telemetry for yt-dlp/ffmpeg in production.
+
+services:
+  - type: pserv
+    name: choleytube-db
+    plan: free
+    ipAllowList: [] # only allow internal connections
+  - type: web
+    name: choleytube
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromService:
+          type: pserv
+          name: choleytube-db
+          property: connectionString
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      - key: YT_DLP_SKIP_DOWNLOAD
+        value: "1"
